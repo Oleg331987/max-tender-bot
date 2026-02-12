@@ -1,1 +1,5 @@
-
+maxapi>=0.9.9
+python-dotenv
+PyPDF2
+python-docx
+aiofiles
