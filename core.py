@@ -23,7 +23,7 @@ def _encode_auth_key(client_id, client_secret):
     return base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
 
 async def get_access_token():
-    """Получение токена GigaChat"""
+    """Получение токена GigaChat (с кешированием)"""
     now = time.time()
     if _token_cache["access_token"] and _token_cache["expires_at"] > now + 10:
         return _token_cache["access_token"]
@@ -64,7 +64,7 @@ async def chat_completion(message_text: str) -> str:
         "Accept": "application/json"
     }
     
-    # Ваш системный промпт (полностью из оригинального кода)
+    # ========== СИСТЕМНЫЙ ПРОМПТ (ВАШ ОРИГИНАЛЬНЫЙ) ==========
     system_prompt = """Ты — виртуальный Тендерный специалист компании ООО "Тритика".
 Твоя основная задача — профессионально консультировать клиентов по участию в закупках и мотивировать их воспользоваться услугами компании.
 📌 Основные обязанности:
@@ -133,10 +133,12 @@ async def chat_completion(message_text: str) -> str:
                     return await chat_completion(message_text)
                 else:
                     return f"Ошибка сервиса (код {resp.status}). Попробуйте позже."
+        except asyncio.TimeoutError:
+            return "Таймаут при обращении к сервису. Попробуйте позже."
         except Exception as e:
             return "Внутренняя ошибка сервиса."
 
-# === Прайс-листы ===
+# ========== ПРАЙС-ЛИСТЫ ==========
 def get_price_list() -> str:
     """Возвращает текст прайс-листа основных услуг"""
     return """
@@ -246,7 +248,7 @@ def get_ecp_price() -> str:
 📞 Для заказа и консультации: +7(4922)223-222
 """
 
-# === Обработка документов ===
+# ========== ОБРАБОТКА ДОКУМЕНТОВ ==========
 async def extract_text_from_document(file_bytes: bytes, filename: str) -> str:
     """Извлекает текст из PDF, DOCX или TXT файла (до 8000 символов)"""
     suffix = os.path.splitext(filename)[1].lower()
@@ -262,8 +264,12 @@ async def extract_text_from_document(file_bytes: bytes, filename: str) -> str:
             doc = docx.Document(tmp_path)
             text = "\n".join([p.text for p in doc.paragraphs])
         else:  # пробуем как текстовый файл
-            with open(tmp_path, 'r', encoding='utf-8', errors='ignore') as f:
-                text = f.read()
+            try:
+                with open(tmp_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    text = f.read()
+            except:
+                with open(tmp_path, 'r', encoding='cp1251', errors='ignore') as f:
+                    text = f.read()
     finally:
         os.unlink(tmp_path)
     
