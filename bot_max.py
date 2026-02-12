@@ -1,38 +1,78 @@
 # bot_max.py
 import asyncio
 import os
+import sys
 import logging
 import aiohttp
 from aiohttp import web
 from dotenv import load_dotenv
 
-from maxapi import Bot, Dispatcher, types
-from maxapi.types import InlineKeyboardMarkup, InlineKeyboardButton
-from maxapi.filters import Filters
+# === НАСТРОЙКА ЛОГГЕРА ===
+# Должен быть самым первым, чтобы видеть всё с самого начала
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s.%(msecs)03d - %(name)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    stream=sys.stdout
+)
+logger = logging.getLogger(__name__)
 
-import core  # ваша бизнес-логика
+logger.info("🚀 STARTING BOT_MAX.PY")
 
 load_dotenv()
 
-# === Конфигурация ===
+# === ПРОВЕРКА КРИТИЧЕСКИХ ПЕРЕМЕННЫХ ===
 BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
-ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
-MANAGER_CHAT_ID = int(os.getenv("MANAGER_CHAT_ID", "0"))
-PORT = int(os.getenv("PORT", "8080"))  # Railway передаёт сюда порт
+if not BOT_TOKEN:
+    logger.error("❌ MAX_BOT_TOKEN is not set!")
+    sys.exit(1)
 
-# === Логирование ===
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
+try:
+    ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
+    MANAGER_CHAT_ID = int(os.getenv("MANAGER_CHAT_ID", "0"))
+except ValueError:
+    logger.error("❌ ADMIN_CHAT_ID or MANAGER_CHAT_ID must be integers!")
+    sys.exit(1)
 
-# === Инициализация бота и диспетчера ===
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot)
+if ADMIN_CHAT_ID == 0 or MANAGER_CHAT_ID == 0:
+    logger.error("❌ ADMIN_CHAT_ID and MANAGER_CHAT_ID must be set and non-zero!")
+    sys.exit(1)
 
-# === Хранилища состояний ===
+PORT = int(os.getenv("PORT", "8080"))
+logger.info(f"✅ Configuration loaded: PORT={PORT}, ADMIN={ADMIN_CHAT_ID}, MANAGER={MANAGER_CHAT_ID}")
+
+# === ИМПОРТ И ИНИЦИАЛИЗАЦИЯ MAXAPI ===
+try:
+    from maxapi import Bot, Dispatcher, types
+    from maxapi.types import InlineKeyboardMarkup, InlineKeyboardButton
+    from maxapi.filters import Filters
+    logger.info("✅ maxapi imported successfully")
+except ImportError as e:
+    logger.exception("❌ Failed to import maxapi. Make sure it's installed.")
+    sys.exit(1)
+
+# === ИМПОРТ БИЗНЕС-ЛОГИКИ ===
+try:
+    import core
+    logger.info("✅ core module imported")
+except Exception as e:
+    logger.exception("❌ Failed to import core module")
+    sys.exit(1)
+
+# === ИНИЦИАЛИЗАЦИЯ БОТА ===
+try:
+    bot = Bot(token=BOT_TOKEN)
+    dp = Dispatcher(bot)
+    logger.info(f"✅ Bot initialized with token: {BOT_TOKEN[:10]}...")
+except Exception as e:
+    logger.exception("❌ Failed to initialize bot")
+    sys.exit(1)
+
+# === ХРАНИЛИЩА СОСТОЯНИЙ ===
 user_states = {}
 message_to_user_map = {}
 
-# === Клавиатуры (Inline) ===
+# ========== КЛАВИАТУРЫ ==========
 def get_main_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Прайс-лист (основные услуги)", callback_data="price_main")],
@@ -45,13 +85,16 @@ def get_back_keyboard():
         [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="back_to_menu")],
     ])
 
-# === Скачивание файлов ===
+# ========== СКАЧИВАНИЕ ФАЙЛОВ ==========
 async def download_file(url: str) -> bytes:
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as resp:
-            return await resp.read()
+            if resp.status == 200:
+                return await resp.read()
+            else:
+                raise Exception(f"Failed to download file: {resp.status}")
 
-# === ОБРАБОТЧИКИ (ваши, без изменений) ===
+# ========== ОБРАБОТЧИКИ ==========
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
     user_id = message.chat.id
@@ -155,7 +198,7 @@ async def handle_document(message: types.Message):
     file_name = file_info.name or "document"
     file_text = await core.extract_text_from_document(file_data, file_name)
     if not file_text.strip():
-        await message.reply("❌ Не удалось извлечь текст из файла.")
+        await message.reply("❌ Не удалось извлечь текст из файла. Убедитесь, что файл содержит текст.")
         return
     prompt = f"Проанализируй этот документ о закупке: {file_text}"
     response = await core.chat_completion(prompt)
@@ -176,30 +219,65 @@ async def handle_manager_reply(message: types.Message):
     else:
         await message.reply("❌ Не удалось найти пользователя для этого сообщения.")
 
-# === HEALTH-CHECK СЕРВЕР ДЛЯ RAILWAY ===
+# ========== HEALTH-CHECK СЕРВЕР (УПРОЩЁННЫЙ) ==========
 async def health_check(request):
-    """Простой ответ для проверки, что приложение живо"""
+    """Простой ответ для проверки жизнеспособности"""
+    logger.debug("Healthcheck ping received")
     return web.Response(text="OK", status=200)
 
-async def start_health_server():
-    """Запуск HTTP сервера на PORT"""
+async def run_health_server():
+    """Запуск HTTP-сервера на PORT, работает вечно"""
     app = web.Application()
     app.router.add_get("/", health_check)
+    
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-    logger.info(f"Health-check server started on port {PORT}")
-    # Держим сервер запущенным
+    
+    try:
+        await site.start()
+        logger.info(f"✅ Health-check server is RUNNING on port {PORT}")
+    except Exception as e:
+        logger.exception(f"❌ Failed to start health server: {e}")
+        # Не выходим, продолжаем выполнение (бот может работать и без health-сервера)
+        return
+    
+    # Бесконечное ожидание, чтобы сервер не остановился
     await asyncio.Event().wait()
 
-# === ЗАПУСК ===
+# ========== ЗАПУСК POLLING С ЗАЩИТОЙ ==========
+async def run_polling():
+    """Запуск polling с автоматическим перезапуском при ошибках"""
+    while True:
+        try:
+            logger.info("🔄 Starting polling...")
+            await dp.start_polling()
+        except Exception as e:
+            logger.exception(f"❌ Polling crashed: {e}")
+            logger.info("🔄 Restarting polling in 5 seconds...")
+            await asyncio.sleep(5)
+            continue
+        break  # нормальное завершение
+
+# ========== MAIN ==========
 async def main():
-    logger.info(f"Запуск бота с токеном: {BOT_TOKEN[:10]}...")
-    # Запускаем polling и health-сервер одновременно
-    polling_task = asyncio.create_task(dp.start_polling())
-    health_task = asyncio.create_task(start_health_server())
-    await asyncio.gather(polling_task, health_task)
+    logger.info("🚀 Entered main()")
+    
+    # Запускаем health-сервер в фоне, но не ждём его вечно
+    health_task = asyncio.create_task(run_health_server())
+    logger.info("✅ Health server task created")
+    
+    # Даём серверу 3 секунды на запуск
+    await asyncio.sleep(3)
+    
+    # Запускаем polling (этот вызов заблокирован до остановки)
+    await run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.exception(f"❌ Unhandled exception: {e}")
+        sys.exit(1)
