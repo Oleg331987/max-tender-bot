@@ -4,4 +4,4 @@ builder = "NIXPACKS"
 [deploy]
 startCommand = "python bot_max.py"
 healthcheckPath = "/"
-healthcheckTimeout = 100
+healthcheckTimeout = 300
