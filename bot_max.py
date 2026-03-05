@@ -48,44 +48,81 @@ except ImportError as e:
     logger.exception("❌ Failed to import Bot/Dispatcher/types")
     sys.exit(1)
 
-# === ИМПОРТ КЛАВИАТУР (Inline / Reply) ===
+# === ДИНАМИЧЕСКИЙ ПОИСК КЛАССОВ КЛАВИАТУР ===
+
+# Inline-клавиатуры (опционально)
 INLINE_SUPPORTED = False
 InlineKeyboardMarkup = None
 InlineKeyboardButton = None
 
-# Поиск inline-клавиатур в разных местах
-inline_import_paths = [
+inline_search_paths = [
     ("maxapi.types", "InlineKeyboardMarkup", "InlineKeyboardButton"),
     ("maxapi.keyboard", "InlineKeyboardMarkup", "InlineKeyboardButton"),
     ("maxapi", "InlineKeyboardMarkup", "InlineKeyboardButton"),
 ]
 
-for module_name, markup_name, button_name in inline_import_paths:
+for mod, markup_name, btn_name in inline_search_paths:
     try:
-        module = __import__(module_name, fromlist=[markup_name, button_name])
-        if hasattr(module, markup_name) and hasattr(module, button_name):
+        module = __import__(mod, fromlist=[markup_name, btn_name])
+        if hasattr(module, markup_name) and hasattr(module, btn_name):
             InlineKeyboardMarkup = getattr(module, markup_name)
-            InlineKeyboardButton = getattr(module, button_name)
+            InlineKeyboardButton = getattr(module, btn_name)
             INLINE_SUPPORTED = True
-            logger.info(f"✅ Inline keyboards found in {module_name}")
+            logger.info(f"✅ Inline keyboards found in {mod}")
             break
     except ImportError:
         continue
 
 if not INLINE_SUPPORTED:
-    logger.warning("⚠️ Inline keyboards not found, will use reply keyboards only")
+    logger.warning("⚠️ Inline keyboards not found")
 
-# Импортируем reply-клавиатуры (они точно должны быть)
-try:
-    from maxapi import ReplyKeyboardMarkup, KeyboardButton
-    logger.info("✅ Reply keyboards imported from maxapi root")
-except ImportError:
+# Reply-клавиатуры (опционально)
+REPLY_SUPPORTED = False
+ReplyKeyboardMarkup = None
+KeyboardButton = None
+
+reply_search_paths = [
+    ("maxapi", "ReplyKeyboardMarkup", "KeyboardButton"),
+    ("maxapi.keyboard", "ReplyKeyboardMarkup", "KeyboardButton"),
+    ("maxapi.types", "ReplyKeyboardMarkup", "KeyboardButton"),
+    ("maxapi.replykeyboard", "ReplyKeyboardMarkup", "KeyboardButton"),
+]
+
+# Также возможные альтернативные названия
+alternative_reply_names = [
+    ("ReplyKeyboard", "Button"),
+    ("ReplyMarkup", "Button"),
+    ("KeyboardMarkup", "KeyboardBtn"),
+]
+
+for mod, markup_name, btn_name in reply_search_paths:
     try:
-        from maxapi.keyboard import ReplyKeyboardMarkup, KeyboardButton
-        logger.info("✅ Reply keyboards imported from maxapi.keyboard")
+        module = __import__(mod, fromlist=[markup_name, btn_name])
+        if hasattr(module, markup_name) and hasattr(module, btn_name):
+            ReplyKeyboardMarkup = getattr(module, markup_name)
+            KeyboardButton = getattr(module, btn_name)
+            REPLY_SUPPORTED = True
+            logger.info(f"✅ Reply keyboards found in {mod} as {markup_name}/{btn_name}")
+            break
     except ImportError:
-        logger.error("❌ Reply keyboards not found, bot cannot function without keyboards!")
-        sys.exit(1)
+        continue
+
+if not REPLY_SUPPORTED:
+    # Если стандартные имена не сработали, пробуем альтернативные
+    for alt_markup, alt_btn in alternative_reply_names:
+        try:
+            # Проверим в корневом модуле
+            if hasattr(maxapi, alt_markup) and hasattr(maxapi, alt_btn):
+                ReplyKeyboardMarkup = getattr(maxapi, alt_markup)
+                KeyboardButton = getattr(maxapi, alt_btn)
+                REPLY_SUPPORTED = True
+                logger.info(f"✅ Reply keyboards found in maxapi root as {alt_markup}/{alt_btn}")
+                break
+        except:
+            pass
+
+if not REPLY_SUPPORTED:
+    logger.warning("⚠️ Reply keyboards not found. Bot will work without keyboards (text commands only).")
 
 # === ИМПОРТ БИЗНЕС-ЛОГИКИ ===
 try:
@@ -110,14 +147,14 @@ message_to_user_map = {}
 
 # ========== КЛАВИАТУРЫ ==========
 def get_main_keyboard():
-    """Возвращает клавиатуру (inline, если поддерживается, иначе reply)."""
+    """Возвращает клавиатуру (inline, reply или None)."""
     if INLINE_SUPPORTED:
         return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📋 Прайс-лист (основные услуги)", callback_data="price_main")],
             [InlineKeyboardButton(text="🔐 Прайс ЭЦП для ФЛ", callback_data="price_ecp")],
             [InlineKeyboardButton(text="❓ Задать вопрос менеджеру", callback_data="manual_mode")],
         ])
-    else:
+    elif REPLY_SUPPORTED:
         return ReplyKeyboardMarkup(
             keyboard=[
                 [KeyboardButton(text="📋 Прайс-лист (основные услуги)")],
@@ -127,6 +164,8 @@ def get_main_keyboard():
             resize_keyboard=True,
             one_time_keyboard=False
         )
+    else:
+        return None  # Нет клавиатуры
 
 def get_back_keyboard():
     """Кнопка возврата в меню."""
@@ -134,11 +173,13 @@ def get_back_keyboard():
         return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="back_to_menu")],
         ])
-    else:
+    elif REPLY_SUPPORTED:
         return ReplyKeyboardMarkup(
             keyboard=[[KeyboardButton(text="◀️ Назад в меню")]],
             resize_keyboard=True
         )
+    else:
+        return None
 
 # ========== СКАЧИВАНИЕ ФАЙЛОВ ==========
 async def download_file(url: str) -> bytes:
@@ -230,7 +271,7 @@ async def handle_text(message: types.Message):
         text = message.text
         state = user_states.get(user_id, "main")
         
-        # Если используется reply-клавиатура, обрабатываем нажатия по тексту
+        # Если используется reply-клавиатура или вообще без клавиатур, обрабатываем нажатия по тексту
         if not INLINE_SUPPORTED:
             if text == "📋 Прайс-лист (основные услуги)":
                 await bot.send_message(user_id, core.get_price_list(), reply_markup=get_main_keyboard())
@@ -351,7 +392,7 @@ async def handle_document(message: types.Message):
     except Exception as e:
         logger.exception(f"Error in handle_document: {e}")
 
-# ВНИМАНИЕ: вместо Filters используем лямбда-функцию для фильтрации ответов менеджера
+# Обработка ответов менеджера (используем лямбду вместо Filters)
 @dp.message_handler(lambda msg: msg.chat.id == MANAGER_CHAT_ID and msg.reply_to_message)
 async def handle_manager_reply(message: types.Message):
     try:
