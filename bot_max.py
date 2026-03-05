@@ -43,26 +43,51 @@ logger.info(f"✅ Configuration loaded: PORT={PORT}, ADMIN={ADMIN_CHAT_ID}, MANA
 # === ИМПОРТ И ИНИЦИАЛИЗАЦИЯ MAXAPI ===
 try:
     from maxapi import Bot, Dispatcher, types
-    # Пытаемся импортировать классы клавиатур из разных мест
-    try:
-        from maxapi.types import InlineKeyboardMarkup, InlineKeyboardButton
-        logger.info("✅ InlineKeyboard from maxapi.types")
-    except ImportError:
-        try:
-            from maxapi.keyboard import InlineKeyboardMarkup, InlineKeyboardButton
-            logger.info("✅ InlineKeyboard from maxapi.keyboard")
-        except ImportError:
-            try:
-                from maxapi.inlinekeyboard import InlineKeyboardMarkup, InlineKeyboardButton
-                logger.info("✅ InlineKeyboard from maxapi.inlinekeyboard")
-            except ImportError:
-                from maxapi import InlineKeyboardMarkup, InlineKeyboardButton
-                logger.info("✅ InlineKeyboard from maxapi root")
     from maxapi.filters import Filters
-    logger.info("✅ maxapi imported successfully")
+    logger.info("✅ Core maxapi classes imported")
 except ImportError as e:
-    logger.exception("❌ Failed to import maxapi. Make sure it's installed.")
+    logger.exception("❌ Failed to import Bot/Dispatcher/Filters")
     sys.exit(1)
+
+# === ИМПОРТ КЛАВИАТУР (Inline / Reply) ===
+# Пытаемся найти InlineKeyboardMarkup и InlineKeyboardButton в разных местах
+INLINE_SUPPORTED = False
+InlineKeyboardMarkup = None
+InlineKeyboardButton = None
+
+# Список мест для поиска inline-классов
+inline_import_paths = [
+    ("maxapi.types", "InlineKeyboardMarkup", "InlineKeyboardButton"),
+    ("maxapi.keyboard", "InlineKeyboardMarkup", "InlineKeyboardButton"),
+    ("maxapi", "InlineKeyboardMarkup", "InlineKeyboardButton"),
+]
+
+for module_name, markup_name, button_name in inline_import_paths:
+    try:
+        module = __import__(module_name, fromlist=[markup_name, button_name])
+        if hasattr(module, markup_name) and hasattr(module, button_name):
+            InlineKeyboardMarkup = getattr(module, markup_name)
+            InlineKeyboardButton = getattr(module, button_name)
+            INLINE_SUPPORTED = True
+            logger.info(f"✅ Inline keyboards found in {module_name}")
+            break
+    except ImportError:
+        continue
+
+if not INLINE_SUPPORTED:
+    logger.warning("⚠️ Inline keyboards not found, will use reply keyboards only")
+
+# Пытаемся импортировать ReplyKeyboardMarkup и KeyboardButton (обычно они есть)
+try:
+    from maxapi import ReplyKeyboardMarkup, KeyboardButton
+    logger.info("✅ Reply keyboards imported")
+except ImportError:
+    try:
+        from maxapi.keyboard import ReplyKeyboardMarkup, KeyboardButton
+        logger.info("✅ Reply keyboards from maxapi.keyboard")
+    except ImportError:
+        logger.error("❌ Reply keyboards not found, bot cannot function without keyboards!")
+        sys.exit(1)
 
 # === ИМПОРТ БИЗНЕС-ЛОГИКИ ===
 try:
@@ -87,18 +112,14 @@ message_to_user_map = {}
 
 # ========== КЛАВИАТУРЫ ==========
 def get_main_keyboard():
-    """Возвращает inline-клавиатуру, если она поддерживается, иначе обычную reply-клавиатуру."""
-    try:
-        # Пытаемся создать inline-клавиатуру
+    """Возвращает клавиатуру (inline, если поддерживается, иначе reply)."""
+    if INLINE_SUPPORTED:
         return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📋 Прайс-лист (основные услуги)", callback_data="price_main")],
             [InlineKeyboardButton(text="🔐 Прайс ЭЦП для ФЛ", callback_data="price_ecp")],
             [InlineKeyboardButton(text="❓ Задать вопрос менеджеру", callback_data="manual_mode")],
         ])
-    except Exception as e:
-        logger.warning(f"Inline keyboard not available, using reply keyboard. Error: {e}")
-        # Fallback на обычную клавиатуру
-        from maxapi import ReplyKeyboardMarkup, KeyboardButton
+    else:
         return ReplyKeyboardMarkup(
             keyboard=[
                 [KeyboardButton(text="📋 Прайс-лист (основные услуги)")],
@@ -111,12 +132,11 @@ def get_main_keyboard():
 
 def get_back_keyboard():
     """Кнопка возврата в меню."""
-    try:
+    if INLINE_SUPPORTED:
         return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="back_to_menu")],
         ])
-    except:
-        from maxapi import ReplyKeyboardMarkup, KeyboardButton
+    else:
         return ReplyKeyboardMarkup(
             keyboard=[[KeyboardButton(text="◀️ Назад в меню")]],
             resize_keyboard=True
@@ -145,63 +165,66 @@ async def cmd_start(message: types.Message):
     except Exception as e:
         logger.exception(f"Error in cmd_start: {e}")
 
-@dp.callback_query_handler(func=lambda call: call.data == "price_main")
-async def callback_price_main(call: types.CallbackQuery):
-    try:
-        await call.answer()
-        await bot.send_message(
-            chat_id=call.from_user.id,
-            text=core.get_price_list(),
-            reply_markup=get_main_keyboard()
-        )
-    except Exception as e:
-        logger.exception(f"Error in callback_price_main: {e}")
+# Обработчики callback-запросов работают только если INLINE_SUPPORTED=True
+if INLINE_SUPPORTED:
+    @dp.callback_query_handler(func=lambda call: call.data == "price_main")
+    async def callback_price_main(call: types.CallbackQuery):
+        try:
+            await call.answer()
+            await bot.send_message(
+                chat_id=call.from_user.id,
+                text=core.get_price_list(),
+                reply_markup=get_main_keyboard()
+            )
+        except Exception as e:
+            logger.exception(f"Error in callback_price_main: {e}")
 
-@dp.callback_query_handler(func=lambda call: call.data == "price_ecp")
-async def callback_price_ecp(call: types.CallbackQuery):
-    try:
-        await call.answer()
-        await bot.send_message(
-            chat_id=call.from_user.id,
-            text=core.get_ecp_price(),
-            reply_markup=get_main_keyboard()
-        )
-    except Exception as e:
-        logger.exception(f"Error in callback_price_ecp: {e}")
+    @dp.callback_query_handler(func=lambda call: call.data == "price_ecp")
+    async def callback_price_ecp(call: types.CallbackQuery):
+        try:
+            await call.answer()
+            await bot.send_message(
+                chat_id=call.from_user.id,
+                text=core.get_ecp_price(),
+                reply_markup=get_main_keyboard()
+            )
+        except Exception as e:
+            logger.exception(f"Error in callback_price_ecp: {e}")
 
-@dp.callback_query_handler(func=lambda call: call.data == "manual_mode")
-async def callback_manual_mode(call: types.CallbackQuery):
-    try:
-        user_id = call.from_user.id
-        user_states[user_id] = "manual_mode"
-        await call.answer("Режим ручного общения активирован")
-        user_info = f"{call.from_user.first_name} (@{call.from_user.username or 'нет'}, ID: {user_id})"
-        manager_text = f"⚠️ ПОЛЬЗОВАТЕЛЬ ПЕРЕШЕЛ В РЕЖИМ РУЧНОГО ОБЩЕНИЯ\n\n👤 {user_info}"
-        sent = await bot.send_message(MANAGER_CHAT_ID, manager_text)
-        message_to_user_map[sent.message_id] = user_id
-        await bot.send_message(
-            chat_id=user_id,
-            text="💬 <b>Режим диалога с менеджером активирован!</b>\n\nОтправьте ваш вопрос. Для возврата в меню нажмите кнопку ниже.",
-            reply_markup=get_back_keyboard(),
-            parse_mode="html"
-        )
-    except Exception as e:
-        logger.exception(f"Error in callback_manual_mode: {e}")
+    @dp.callback_query_handler(func=lambda call: call.data == "manual_mode")
+    async def callback_manual_mode(call: types.CallbackQuery):
+        try:
+            user_id = call.from_user.id
+            user_states[user_id] = "manual_mode"
+            await call.answer("Режим ручного общения активирован")
+            user_info = f"{call.from_user.first_name} (@{call.from_user.username or 'нет'}, ID: {user_id})"
+            manager_text = f"⚠️ ПОЛЬЗОВАТЕЛЬ ПЕРЕШЕЛ В РЕЖИМ РУЧНОГО ОБЩЕНИЯ\n\n👤 {user_info}"
+            sent = await bot.send_message(MANAGER_CHAT_ID, manager_text)
+            message_to_user_map[sent.message_id] = user_id
+            await bot.send_message(
+                chat_id=user_id,
+                text="💬 <b>Режим диалога с менеджером активирован!</b>\n\nОтправьте ваш вопрос. Для возврата в меню нажмите кнопку ниже.",
+                reply_markup=get_back_keyboard(),
+                parse_mode="html"
+            )
+        except Exception as e:
+            logger.exception(f"Error in callback_manual_mode: {e}")
 
-@dp.callback_query_handler(func=lambda call: call.data == "back_to_menu")
-async def callback_back_to_menu(call: types.CallbackQuery):
-    try:
-        user_id = call.from_user.id
-        user_states[user_id] = "main"
-        await call.answer("Возврат в меню")
-        await bot.send_message(
-            chat_id=user_id,
-            text="Главное меню:",
-            reply_markup=get_main_keyboard()
-        )
-    except Exception as e:
-        logger.exception(f"Error in callback_back_to_menu: {e}")
+    @dp.callback_query_handler(func=lambda call: call.data == "back_to_menu")
+    async def callback_back_to_menu(call: types.CallbackQuery):
+        try:
+            user_id = call.from_user.id
+            user_states[user_id] = "main"
+            await call.answer("Возврат в меню")
+            await bot.send_message(
+                chat_id=user_id,
+                text="Главное меню:",
+                reply_markup=get_main_keyboard()
+            )
+        except Exception as e:
+            logger.exception(f"Error in callback_back_to_menu: {e}")
 
+# Обработка текстовых сообщений (включая reply-клавиатуру, если inline не поддерживается)
 @dp.message_handler(content_types=['text'])
 async def handle_text(message: types.Message):
     try:
@@ -209,6 +232,34 @@ async def handle_text(message: types.Message):
         text = message.text
         state = user_states.get(user_id, "main")
         
+        # Если используется reply-клавиатура, обрабатываем нажатия по тексту
+        if not INLINE_SUPPORTED:
+            if text == "📋 Прайс-лист (основные услуги)":
+                await bot.send_message(user_id, core.get_price_list(), reply_markup=get_main_keyboard())
+                return
+            elif text == "🔐 Прайс ЭЦП для ФЛ":
+                await bot.send_message(user_id, core.get_ecp_price(), reply_markup=get_main_keyboard())
+                return
+            elif text == "❓ Задать вопрос менеджеру":
+                # Переход в ручной режим
+                user_states[user_id] = "manual_mode"
+                user_info = f"{message.from_user.first_name} (@{message.from_user.username or 'нет'}, ID: {user_id})"
+                manager_text = f"⚠️ ПОЛЬЗОВАТЕЛЬ ПЕРЕШЕЛ В РЕЖИМ РУЧНОГО ОБЩЕНИЯ\n\n👤 {user_info}"
+                sent = await bot.send_message(MANAGER_CHAT_ID, manager_text)
+                message_to_user_map[sent.message_id] = user_id
+                await bot.send_message(
+                    chat_id=user_id,
+                    text="💬 <b>Режим диалога с менеджером активирован!</b>\n\nОтправьте ваш вопрос. Для возврата в меню нажмите кнопку ниже.",
+                    reply_markup=get_back_keyboard(),
+                    parse_mode="html"
+                )
+                return
+            elif text == "◀️ Назад в меню":
+                user_states[user_id] = "main"
+                await bot.send_message(user_id, "Главное меню:", reply_markup=get_main_keyboard())
+                return
+        
+        # Обычная обработка текста (когда не в режиме меню)
         if state == "manual_mode":
             user_info = f"{message.from_user.first_name} (@{message.from_user.username or 'нет'}, ID: {user_id})"
             forward_text = f"📩 <b>Сообщение от пользователя:</b>\n\n{user_info}\n\n{text}"
@@ -233,7 +284,6 @@ async def handle_text(message: types.Message):
         
         await message.reply("⏳ Обрабатываю ваш запрос...")
         
-        # Если core.chat_completion синхронный, оборачиваем в asyncio.to_thread
         if asyncio.iscoroutinefunction(core.chat_completion):
             response = await core.chat_completion(text)
         else:
@@ -249,12 +299,11 @@ async def handle_document(message: types.Message):
         user_id = message.chat.id
         state = user_states.get(user_id, "main")
         
-        # Определяем, что прислано: документ или фото
         if message.document:
             file_info = message.document
             file_name = file_info.name or "document"
         elif message.photo:
-            file_info = message.photo[-1]  # Берём самое большое фото
+            file_info = message.photo[-1]
             file_name = "photo.jpg"
         else:
             await message.reply("Не удалось обработать вложение.")
@@ -285,7 +334,6 @@ async def handle_document(message: types.Message):
         
         await message.reply("⏳ Скачиваю и анализирую документ...")
         
-        # Извлечение текста из файла
         if asyncio.iscoroutinefunction(core.extract_text_from_document):
             file_text = await core.extract_text_from_document(file_data, file_name)
         else:
