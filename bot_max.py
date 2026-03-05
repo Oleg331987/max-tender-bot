@@ -8,7 +8,6 @@ from aiohttp import web
 from dotenv import load_dotenv
 
 # === НАСТРОЙКА ЛОГГЕРА ===
-# Должен быть самым первым, чтобы видеть всё с самого начала
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s.%(msecs)03d - %(name)s - %(levelname)s - %(message)s",
@@ -44,7 +43,21 @@ logger.info(f"✅ Configuration loaded: PORT={PORT}, ADMIN={ADMIN_CHAT_ID}, MANA
 # === ИМПОРТ И ИНИЦИАЛИЗАЦИЯ MAXAPI ===
 try:
     from maxapi import Bot, Dispatcher, types
-    from maxapi.types import InlineKeyboardMarkup, InlineKeyboardButton
+    # Пытаемся импортировать классы клавиатур из разных мест
+    try:
+        from maxapi.types import InlineKeyboardMarkup, InlineKeyboardButton
+        logger.info("✅ InlineKeyboard from maxapi.types")
+    except ImportError:
+        try:
+            from maxapi.keyboard import InlineKeyboardMarkup, InlineKeyboardButton
+            logger.info("✅ InlineKeyboard from maxapi.keyboard")
+        except ImportError:
+            try:
+                from maxapi.inlinekeyboard import InlineKeyboardMarkup, InlineKeyboardButton
+                logger.info("✅ InlineKeyboard from maxapi.inlinekeyboard")
+            except ImportError:
+                from maxapi import InlineKeyboardMarkup, InlineKeyboardButton
+                logger.info("✅ InlineKeyboard from maxapi root")
     from maxapi.filters import Filters
     logger.info("✅ maxapi imported successfully")
 except ImportError as e:
@@ -74,16 +87,40 @@ message_to_user_map = {}
 
 # ========== КЛАВИАТУРЫ ==========
 def get_main_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Прайс-лист (основные услуги)", callback_data="price_main")],
-        [InlineKeyboardButton(text="🔐 Прайс ЭЦП для ФЛ", callback_data="price_ecp")],
-        [InlineKeyboardButton(text="❓ Задать вопрос менеджеру", callback_data="manual_mode")],
-    ])
+    """Возвращает inline-клавиатуру, если она поддерживается, иначе обычную reply-клавиатуру."""
+    try:
+        # Пытаемся создать inline-клавиатуру
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📋 Прайс-лист (основные услуги)", callback_data="price_main")],
+            [InlineKeyboardButton(text="🔐 Прайс ЭЦП для ФЛ", callback_data="price_ecp")],
+            [InlineKeyboardButton(text="❓ Задать вопрос менеджеру", callback_data="manual_mode")],
+        ])
+    except Exception as e:
+        logger.warning(f"Inline keyboard not available, using reply keyboard. Error: {e}")
+        # Fallback на обычную клавиатуру
+        from maxapi import ReplyKeyboardMarkup, KeyboardButton
+        return ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="📋 Прайс-лист (основные услуги)")],
+                [KeyboardButton(text="🔐 Прайс ЭЦП для ФЛ")],
+                [KeyboardButton(text="❓ Задать вопрос менеджеру")],
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=False
+        )
 
 def get_back_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="back_to_menu")],
-    ])
+    """Кнопка возврата в меню."""
+    try:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="back_to_menu")],
+        ])
+    except:
+        from maxapi import ReplyKeyboardMarkup, KeyboardButton
+        return ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="◀️ Назад в меню")]],
+            resize_keyboard=True
+        )
 
 # ========== СКАЧИВАНИЕ ФАЙЛОВ ==========
 async def download_file(url: str) -> bytes:
@@ -97,136 +134,200 @@ async def download_file(url: str) -> bytes:
 # ========== ОБРАБОТЧИКИ ==========
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
-    user_id = message.chat.id
-    user_states[user_id] = "main"
-    logger.info(f"User {user_id} started bot")
-    await message.reply(
-        "👋 Добро пожаловать в ООО 'Тритика'!\n\nВыберите действие:",
-        reply_markup=get_main_keyboard()
-    )
+    try:
+        user_id = message.chat.id
+        user_states[user_id] = "main"
+        logger.info(f"User {user_id} started bot")
+        await message.reply(
+            "👋 Добро пожаловать в ООО 'Тритика'!\n\nВыберите действие:",
+            reply_markup=get_main_keyboard()
+        )
+    except Exception as e:
+        logger.exception(f"Error in cmd_start: {e}")
 
 @dp.callback_query_handler(func=lambda call: call.data == "price_main")
 async def callback_price_main(call: types.CallbackQuery):
-    await call.answer()
-    await bot.send_message(
-        chat_id=call.from_user.id,
-        text=core.get_price_list(),
-        reply_markup=get_main_keyboard()
-    )
+    try:
+        await call.answer()
+        await bot.send_message(
+            chat_id=call.from_user.id,
+            text=core.get_price_list(),
+            reply_markup=get_main_keyboard()
+        )
+    except Exception as e:
+        logger.exception(f"Error in callback_price_main: {e}")
 
 @dp.callback_query_handler(func=lambda call: call.data == "price_ecp")
 async def callback_price_ecp(call: types.CallbackQuery):
-    await call.answer()
-    await bot.send_message(
-        chat_id=call.from_user.id,
-        text=core.get_ecp_price(),
-        reply_markup=get_main_keyboard()
-    )
+    try:
+        await call.answer()
+        await bot.send_message(
+            chat_id=call.from_user.id,
+            text=core.get_ecp_price(),
+            reply_markup=get_main_keyboard()
+        )
+    except Exception as e:
+        logger.exception(f"Error in callback_price_ecp: {e}")
 
 @dp.callback_query_handler(func=lambda call: call.data == "manual_mode")
 async def callback_manual_mode(call: types.CallbackQuery):
-    user_id = call.from_user.id
-    user_states[user_id] = "manual_mode"
-    await call.answer("Режим ручного общения активирован")
-    user_info = f"{call.from_user.first_name} (@{call.from_user.username or 'нет'}, ID: {user_id})"
-    manager_text = f"⚠️ ПОЛЬЗОВАТЕЛЬ ПЕРЕШЕЛ В РЕЖИМ РУЧНОГО ОБЩЕНИЯ\n\n👤 {user_info}"
-    sent = await bot.send_message(MANAGER_CHAT_ID, manager_text)
-    message_to_user_map[sent.message_id] = user_id
-    await bot.send_message(
-        chat_id=user_id,
-        text="💬 <b>Режим диалога с менеджером активирован!</b>\n\nОтправьте ваш вопрос. Для возврата в меню нажмите кнопку ниже.",
-        reply_markup=get_back_keyboard(),
-        parse_mode="html"
-    )
+    try:
+        user_id = call.from_user.id
+        user_states[user_id] = "manual_mode"
+        await call.answer("Режим ручного общения активирован")
+        user_info = f"{call.from_user.first_name} (@{call.from_user.username or 'нет'}, ID: {user_id})"
+        manager_text = f"⚠️ ПОЛЬЗОВАТЕЛЬ ПЕРЕШЕЛ В РЕЖИМ РУЧНОГО ОБЩЕНИЯ\n\n👤 {user_info}"
+        sent = await bot.send_message(MANAGER_CHAT_ID, manager_text)
+        message_to_user_map[sent.message_id] = user_id
+        await bot.send_message(
+            chat_id=user_id,
+            text="💬 <b>Режим диалога с менеджером активирован!</b>\n\nОтправьте ваш вопрос. Для возврата в меню нажмите кнопку ниже.",
+            reply_markup=get_back_keyboard(),
+            parse_mode="html"
+        )
+    except Exception as e:
+        logger.exception(f"Error in callback_manual_mode: {e}")
 
 @dp.callback_query_handler(func=lambda call: call.data == "back_to_menu")
 async def callback_back_to_menu(call: types.CallbackQuery):
-    user_id = call.from_user.id
-    user_states[user_id] = "main"
-    await call.answer("Возврат в меню")
-    await bot.send_message(
-        chat_id=user_id,
-        text="Главное меню:",
-        reply_markup=get_main_keyboard()
-    )
+    try:
+        user_id = call.from_user.id
+        user_states[user_id] = "main"
+        await call.answer("Возврат в меню")
+        await bot.send_message(
+            chat_id=user_id,
+            text="Главное меню:",
+            reply_markup=get_main_keyboard()
+        )
+    except Exception as e:
+        logger.exception(f"Error in callback_back_to_menu: {e}")
 
 @dp.message_handler(content_types=['text'])
 async def handle_text(message: types.Message):
-    user_id = message.chat.id
-    text = message.text
-    state = user_states.get(user_id, "main")
-    if state == "manual_mode":
-        user_info = f"{message.from_user.first_name} (@{message.from_user.username or 'нет'}, ID: {user_id})"
-        forward_text = f"📩 <b>Сообщение от пользователя:</b>\n\n{user_info}\n\n{text}"
-        sent = await bot.send_message(MANAGER_CHAT_ID, forward_text, parse_mode="html")
-        message_to_user_map[sent.message_id] = user_id
-        await message.reply(
-            "✅ Ваше сообщение переслано менеджеру. Он ответит вам в ближайшее время.",
-            reply_markup=get_back_keyboard()
-        )
-        return
     try:
-        await bot.send_message(ADMIN_CHAT_ID, f"📨 Запрос от {message.from_user.first_name} (ID: {user_id}):\n{text[:200]}")
-    except: pass
-    await bot.send_chat_action(user_id, "typing")
-    await message.reply("⏳ Обрабатываю ваш запрос...")
-    response = await core.chat_completion(text)
-    await bot.send_message(chat_id=user_id, text=response, reply_markup=get_main_keyboard())
+        user_id = message.chat.id
+        text = message.text
+        state = user_states.get(user_id, "main")
+        
+        if state == "manual_mode":
+            user_info = f"{message.from_user.first_name} (@{message.from_user.username or 'нет'}, ID: {user_id})"
+            forward_text = f"📩 <b>Сообщение от пользователя:</b>\n\n{user_info}\n\n{text}"
+            sent = await bot.send_message(MANAGER_CHAT_ID, forward_text, parse_mode="html")
+            message_to_user_map[sent.message_id] = user_id
+            await message.reply(
+                "✅ Ваше сообщение переслано менеджеру. Он ответит вам в ближайшее время.",
+                reply_markup=get_back_keyboard()
+            )
+            return
+        
+        try:
+            await bot.send_message(ADMIN_CHAT_ID, f"📨 Запрос от {message.from_user.first_name} (ID: {user_id}):\n{text[:200]}")
+        except:
+            pass
+        
+        # Отправляем "печатает..." если метод поддерживается
+        try:
+            await bot.send_chat_action(user_id, "typing")
+        except:
+            pass
+        
+        await message.reply("⏳ Обрабатываю ваш запрос...")
+        
+        # Если core.chat_completion синхронный, оборачиваем в asyncio.to_thread
+        if asyncio.iscoroutinefunction(core.chat_completion):
+            response = await core.chat_completion(text)
+        else:
+            response = await asyncio.to_thread(core.chat_completion, text)
+        
+        await bot.send_message(chat_id=user_id, text=response, reply_markup=get_main_keyboard())
+    except Exception as e:
+        logger.exception(f"Error in handle_text: {e}")
 
 @dp.message_handler(content_types=['document', 'photo'])
 async def handle_document(message: types.Message):
-    user_id = message.chat.id
-    state = user_states.get(user_id, "main")
-    file_info = message.document or (message.photo[-1] if message.photo else None)
-    if not file_info:
-        await message.reply("Не удалось обработать вложение.")
-        return
-    if state == "manual_mode":
-        user_info = f"{message.from_user.first_name} (@{message.from_user.username or 'нет'}, ID: {user_id})"
-        file_data = await download_file(file_info.url)
-        caption = f"📎 Вложение от {user_info}"
-        await bot.send_document(
-            chat_id=MANAGER_CHAT_ID,
-            document=file_data,
-            filename=file_info.name or "file",
-            caption=caption
-        )
-        await message.reply("✅ Файл переслан менеджеру.", reply_markup=get_back_keyboard())
-        return
-    await message.reply("⏳ Скачиваю и анализирую документ...")
-    file_data = await download_file(file_info.url)
-    file_name = file_info.name or "document"
-    file_text = await core.extract_text_from_document(file_data, file_name)
-    if not file_text.strip():
-        await message.reply("❌ Не удалось извлечь текст из файла. Убедитесь, что файл содержит текст.")
-        return
-    prompt = f"Проанализируй этот документ о закупке: {file_text}"
-    response = await core.chat_completion(prompt)
-    await bot.send_message(chat_id=user_id, text=response, reply_markup=get_main_keyboard())
+    try:
+        user_id = message.chat.id
+        state = user_states.get(user_id, "main")
+        
+        # Определяем, что прислано: документ или фото
+        if message.document:
+            file_info = message.document
+            file_name = file_info.name or "document"
+        elif message.photo:
+            file_info = message.photo[-1]  # Берём самое большое фото
+            file_name = "photo.jpg"
+        else:
+            await message.reply("Не удалось обработать вложение.")
+            return
+        
+        # Получаем file_id и скачиваем файл через bot.get_file
+        try:
+            file_id = file_info.file_id
+            file = await bot.get_file(file_id)
+            file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+            file_data = await download_file(file_url)
+        except Exception as e:
+            logger.exception("Failed to download file via get_file")
+            await message.reply("❌ Не удалось скачать файл. Попробуйте позже.")
+            return
+        
+        if state == "manual_mode":
+            user_info = f"{message.from_user.first_name} (@{message.from_user.username or 'нет'}, ID: {user_id})"
+            caption = f"📎 Вложение от {user_info}"
+            await bot.send_document(
+                chat_id=MANAGER_CHAT_ID,
+                document=file_data,
+                filename=file_name,
+                caption=caption
+            )
+            await message.reply("✅ Файл переслан менеджеру.", reply_markup=get_back_keyboard())
+            return
+        
+        await message.reply("⏳ Скачиваю и анализирую документ...")
+        
+        # Извлечение текста из файла
+        if asyncio.iscoroutinefunction(core.extract_text_from_document):
+            file_text = await core.extract_text_from_document(file_data, file_name)
+        else:
+            file_text = await asyncio.to_thread(core.extract_text_from_document, file_data, file_name)
+        
+        if not file_text.strip():
+            await message.reply("❌ Не удалось извлечь текст из файла. Убедитесь, что файл содержит текст.")
+            return
+        
+        prompt = f"Проанализируй этот документ о закупке: {file_text}"
+        if asyncio.iscoroutinefunction(core.chat_completion):
+            response = await core.chat_completion(prompt)
+        else:
+            response = await asyncio.to_thread(core.chat_completion, prompt)
+        
+        await bot.send_message(chat_id=user_id, text=response, reply_markup=get_main_keyboard())
+    except Exception as e:
+        logger.exception(f"Error in handle_document: {e}")
 
 @dp.message_handler(Filters.chat(chat_id=MANAGER_CHAT_ID), Filters.reply)
 async def handle_manager_reply(message: types.Message):
-    replied_msg = message.reply_to_message
-    original_user_id = message_to_user_map.get(replied_msg.message_id)
-    if original_user_id:
-        await bot.send_message(
-            chat_id=original_user_id,
-            text=f"💬 <b>Ответ от менеджера:</b>\n\n{message.text}",
-            parse_mode="html"
-        )
-        await message.reply("✅ Ответ отправлен пользователю.")
-        del message_to_user_map[replied_msg.message_id]
-    else:
-        await message.reply("❌ Не удалось найти пользователя для этого сообщения.")
+    try:
+        replied_msg = message.reply_to_message
+        original_user_id = message_to_user_map.pop(replied_msg.message_id, None)
+        if original_user_id:
+            await bot.send_message(
+                chat_id=original_user_id,
+                text=f"💬 <b>Ответ от менеджера:</b>\n\n{message.text}",
+                parse_mode="html"
+            )
+            await message.reply("✅ Ответ отправлен пользователю.")
+        else:
+            await message.reply("❌ Не удалось найти пользователя для этого сообщения.")
+    except Exception as e:
+        logger.exception(f"Error in handle_manager_reply: {e}")
 
-# ========== HEALTH-CHECK СЕРВЕР (УПРОЩЁННЫЙ) ==========
+# ========== HEALTH-CHECK СЕРВЕР ==========
 async def health_check(request):
-    """Простой ответ для проверки жизнеспособности"""
     logger.debug("Healthcheck ping received")
     return web.Response(text="OK", status=200)
 
 async def run_health_server():
-    """Запуск HTTP-сервера на PORT, работает вечно"""
     app = web.Application()
     app.router.add_get("/", health_check)
     
@@ -239,15 +340,12 @@ async def run_health_server():
         logger.info(f"✅ Health-check server is RUNNING on port {PORT}")
     except Exception as e:
         logger.exception(f"❌ Failed to start health server: {e}")
-        # Не выходим, продолжаем выполнение (бот может работать и без health-сервера)
         return
     
-    # Бесконечное ожидание, чтобы сервер не остановился
     await asyncio.Event().wait()
 
 # ========== ЗАПУСК POLLING С ЗАЩИТОЙ ==========
 async def run_polling():
-    """Запуск polling с автоматическим перезапуском при ошибках"""
     while True:
         try:
             logger.info("🔄 Starting polling...")
@@ -257,20 +355,17 @@ async def run_polling():
             logger.info("🔄 Restarting polling in 5 seconds...")
             await asyncio.sleep(5)
             continue
-        break  # нормальное завершение
+        break
 
 # ========== MAIN ==========
 async def main():
     logger.info("🚀 Entered main()")
     
-    # Запускаем health-сервер в фоне, но не ждём его вечно
     health_task = asyncio.create_task(run_health_server())
     logger.info("✅ Health server task created")
     
-    # Даём серверу 3 секунды на запуск
     await asyncio.sleep(3)
     
-    # Запускаем polling (этот вызов заблокирован до остановки)
     await run_polling()
 
 if __name__ == "__main__":
