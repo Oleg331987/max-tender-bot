@@ -43,19 +43,17 @@ logger.info(f"✅ Configuration loaded: PORT={PORT}, ADMIN={ADMIN_CHAT_ID}, MANA
 # === ИМПОРТ И ИНИЦИАЛИЗАЦИЯ MAXAPI ===
 try:
     from maxapi import Bot, Dispatcher, types
-    from maxapi.filters import Filters
-    logger.info("✅ Core maxapi classes imported")
+    logger.info("✅ Core maxapi classes imported (Bot, Dispatcher, types)")
 except ImportError as e:
-    logger.exception("❌ Failed to import Bot/Dispatcher/Filters")
+    logger.exception("❌ Failed to import Bot/Dispatcher/types")
     sys.exit(1)
 
 # === ИМПОРТ КЛАВИАТУР (Inline / Reply) ===
-# Пытаемся найти InlineKeyboardMarkup и InlineKeyboardButton в разных местах
 INLINE_SUPPORTED = False
 InlineKeyboardMarkup = None
 InlineKeyboardButton = None
 
-# Список мест для поиска inline-классов
+# Поиск inline-клавиатур в разных местах
 inline_import_paths = [
     ("maxapi.types", "InlineKeyboardMarkup", "InlineKeyboardButton"),
     ("maxapi.keyboard", "InlineKeyboardMarkup", "InlineKeyboardButton"),
@@ -77,14 +75,14 @@ for module_name, markup_name, button_name in inline_import_paths:
 if not INLINE_SUPPORTED:
     logger.warning("⚠️ Inline keyboards not found, will use reply keyboards only")
 
-# Пытаемся импортировать ReplyKeyboardMarkup и KeyboardButton (обычно они есть)
+# Импортируем reply-клавиатуры (они точно должны быть)
 try:
     from maxapi import ReplyKeyboardMarkup, KeyboardButton
-    logger.info("✅ Reply keyboards imported")
+    logger.info("✅ Reply keyboards imported from maxapi root")
 except ImportError:
     try:
         from maxapi.keyboard import ReplyKeyboardMarkup, KeyboardButton
-        logger.info("✅ Reply keyboards from maxapi.keyboard")
+        logger.info("✅ Reply keyboards imported from maxapi.keyboard")
     except ImportError:
         logger.error("❌ Reply keyboards not found, bot cannot function without keyboards!")
         sys.exit(1)
@@ -165,7 +163,7 @@ async def cmd_start(message: types.Message):
     except Exception as e:
         logger.exception(f"Error in cmd_start: {e}")
 
-# Обработчики callback-запросов работают только если INLINE_SUPPORTED=True
+# Обработчики callback-запросов (только если inline поддерживаются)
 if INLINE_SUPPORTED:
     @dp.callback_query_handler(func=lambda call: call.data == "price_main")
     async def callback_price_main(call: types.CallbackQuery):
@@ -353,7 +351,8 @@ async def handle_document(message: types.Message):
     except Exception as e:
         logger.exception(f"Error in handle_document: {e}")
 
-@dp.message_handler(Filters.chat(chat_id=MANAGER_CHAT_ID), Filters.reply)
+# ВНИМАНИЕ: вместо Filters используем лямбда-функцию для фильтрации ответов менеджера
+@dp.message_handler(lambda msg: msg.chat.id == MANAGER_CHAT_ID and msg.reply_to_message)
 async def handle_manager_reply(message: types.Message):
     try:
         replied_msg = message.reply_to_message
