@@ -4,7 +4,6 @@ import os
 import sys
 import logging
 import aiohttp
-import inspect
 from aiohttp import web
 from dotenv import load_dotenv
 
@@ -97,8 +96,6 @@ user_states = {}
 message_to_user_map = {}
 
 # === ОПРЕДЕЛЕНИЕ ФУНКЦИЙ-ОБРАБОТЧИКОВ ===
-# (все обработчики как в предыдущей версии, они должны быть определены)
-
 async def cmd_start(message):
     try:
         user_id = message.chat.id
@@ -106,7 +103,7 @@ async def cmd_start(message):
         logger.info(f"User {user_id} started bot")
         await message.reply(
             "👋 Добро пожаловать в ООО 'Тритика'!\n\nВыберите действие:",
-            reply_markup=None  # Клавиатуры всё равно не работают
+            reply_markup=None  # Клавиатуры не поддерживаются, но можно добавить позже
         )
     except Exception as e:
         logger.exception(f"Error in cmd_start: {e}")
@@ -205,6 +202,8 @@ async def handle_document(message):
 
 async def handle_manager_reply(message):
     try:
+        if not message.reply_to_message:
+            return
         replied_msg = message.reply_to_message
         original_user_id = message_to_user_map.pop(replied_msg.message_id, None)
         if original_user_id:
@@ -219,59 +218,79 @@ async def handle_manager_reply(message):
     except Exception as e:
         logger.exception(f"Error in handle_manager_reply: {e}")
 
-# ========== ПОПЫТКА РЕГИСТРАЦИИ ==========
-logger.info("🔍 ========== ПОПЫТКА РЕГИСТРАЦИИ ==========")
+# ========== РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ==========
+def register_handlers():
+    """Пытается зарегистрировать обработчики разными способами."""
+    logger.info("🔍 ========== ПОПЫТКА РЕГИСТРАЦИИ ==========")
 
-# Метод 1: Если есть register_message_handler (как в aiogram 3.x)
-if hasattr(dp, 'register_message_handler'):
-    logger.info("✅ Found register_message_handler, using it")
-    dp.register_message_handler(cmd_start, commands=['start'])
-    dp.register_message_handler(handle_text, content_types=['text'])
-    dp.register_message_handler(handle_document, content_types=['document', 'photo'])
-    dp.register_message_handler(handle_manager_reply, 
-                                lambda msg: msg.chat.id == MANAGER_CHAT_ID and msg.reply_to_message)
-    logger.info("✅ Handlers registered via register_message_handler")
+    # Способ 1: register_message_handler (aiogram 3.x style)
+    if hasattr(dp, 'register_message_handler'):
+        logger.info("✅ Using register_message_handler")
+        dp.register_message_handler(cmd_start, commands=['start'])
+        dp.register_message_handler(handle_text, content_types=['text'])
+        dp.register_message_handler(handle_document, content_types=['document', 'photo'])
+        dp.register_message_handler(handle_manager_reply, 
+                                    lambda msg: msg.chat.id == MANAGER_CHAT_ID and msg.reply_to_message)
+        return True
 
-# Метод 2: Если есть add_handler (как в python-telegram-bot)
-elif hasattr(dp, 'add_handler'):
-    logger.info("✅ Found add_handler, attempting to use it")
-    try:
-        # Попробуем импортировать классы хэндлеров
-        from maxapi.handlers import MessageHandler, CommandHandler, Filters
-        dp.add_handler(CommandHandler('start', cmd_start))
-        dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
-        dp.add_handler(MessageHandler(Filters.document | Filters.photo, handle_document))
-        dp.add_handler(MessageHandler(Filters.chat(MANAGER_CHAT_ID) & Filters.reply, handle_manager_reply))
-        logger.info("✅ Handlers registered via add_handler with maxapi.handlers")
-    except ImportError:
-        # Возможно, классы называются иначе
-        logger.warning("⚠️ Could not import maxapi.handlers, trying generic add_handler")
-        # Универсальный способ: передаём кортеж (функция, фильтр)
-        dp.add_handler((cmd_start, {'commands': ['start']}))
-        dp.add_handler((handle_text, {'content_types': ['text']}))
-        dp.add_handler((handle_document, {'content_types': ['document', 'photo']}))
-        dp.add_handler((handle_manager_reply, {'chat_id': MANAGER_CHAT_ID, 'reply': True}))
-        logger.info("✅ Handlers registered via generic add_handler")
+    # Способ 2: add_handler (python-telegram-bot style)
+    if hasattr(dp, 'add_handler'):
+        logger.info("✅ Using add_handler")
+        try:
+            # Попробуем импортировать классы хэндлеров из maxapi.handlers
+            from maxapi.handlers import MessageHandler, CommandHandler
+            # Также нужен Filters, если есть
+            try:
+                from maxapi.filters import Filters
+            except ImportError:
+                Filters = None
+                logger.warning("Filters not found, using dict filters")
 
-# Метод 3: Если используется декораторный стиль (но мы уже знаем, что message_handler нет)
-elif hasattr(dp, 'message_handler'):
-    logger.info("✅ Found message_handler decorator style")
-    # Этот вариант уже не должен сработать, но оставим для полноты
-    dp.message_handler(commands=['start'])(cmd_start)
-    dp.message_handler(content_types=['text'])(handle_text)
-    dp.message_handler(content_types=['document', 'photo'])(handle_document)
-    dp.message_handler(lambda msg: msg.chat.id == MANAGER_CHAT_ID and msg.reply_to_message)(handle_manager_reply)
-    logger.info("✅ Handlers registered via message_handler decorators")
+            dp.add_handler(CommandHandler('start', cmd_start))
+            
+            if Filters:
+                dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
+                dp.add_handler(MessageHandler(Filters.document | Filters.photo, handle_document))
+                dp.add_handler(MessageHandler(Filters.chat(MANAGER_CHAT_ID) & Filters.reply, handle_manager_reply))
+            else:
+                # Используем фильтры в виде словаря
+                dp.add_handler(MessageHandler(handle_text, {'content_types': ['text']}))
+                dp.add_handler(MessageHandler(handle_document, {'content_types': ['document', 'photo']}))
+                dp.add_handler(MessageHandler(handle_manager_reply, {'chat_id': MANAGER_CHAT_ID, 'reply': True}))
+            return True
+        except ImportError as e:
+            logger.warning(f"Could not import handlers from maxapi.handlers: {e}")
+            # Универсальный способ: передаём кортеж (функция, фильтр)
+            dp.add_handler((cmd_start, {'commands': ['start']}))
+            dp.add_handler((handle_text, {'content_types': ['text']}))
+            dp.add_handler((handle_document, {'content_types': ['document', 'photo']}))
+            dp.add_handler((handle_manager_reply, {'chat_id': MANAGER_CHAT_ID, 'reply': True}))
+            return True
 
+    # Способ 3: декораторный стиль (если есть message_handler)
+    if hasattr(dp, 'message_handler'):
+        logger.info("✅ Using message_handler decorator style")
+        dp.message_handler(commands=['start'])(cmd_start)
+        dp.message_handler(content_types=['text'])(handle_text)
+        dp.message_handler(content_types=['document', 'photo'])(handle_document)
+        dp.message_handler(lambda msg: msg.chat.id == MANAGER_CHAT_ID and msg.reply_to_message)(handle_manager_reply)
+        return True
+
+    logger.error("❌ No known registration method found. Handlers will NOT be registered.")
+    return False
+
+# Пытаемся зарегистрировать обработчики
+handlers_registered = register_handlers()
+if not handlers_registered:
+    logger.error("❌ Handlers registration failed. Bot will not respond to messages.")
 else:
-    logger.error("❌ No known registration method found. Please check the logs above.")
-    logger.error("❌ The bot will not handle any messages, but will stay alive for diagnostics.")
-    # Не выходим, чтобы health-check работал и можно было посмотреть логи
+    logger.info("✅ Handlers registration attempted. Check logs above to confirm method used.")
 
 # ========== HEALTH-CHECK СЕРВЕР ==========
 async def health_check(request):
+    status = f"Bot is alive. Handlers registered: {handlers_registered}"
     logger.debug("Healthcheck ping received")
-    return web.Response(text=f"Bot is alive. Check logs for diagnostics. INLINE={False}, REPLY={False}", status=200)
+    return web.Response(text=status, status=200)
 
 async def run_health_server():
     app = web.Application()
@@ -291,12 +310,13 @@ async def run_health_server():
     
     await asyncio.Event().wait()
 
-# ========== ЗАПУСК POLLING ==========
+# ========== ЗАПУСК POLLING С ЗАЩИТОЙ ==========
 async def run_polling():
     while True:
         try:
             logger.info("🔄 Starting polling...")
-            await dp.start_polling()
+            # ВАЖНО: передаём bot в start_polling, как требует ошибка
+            await dp.start_polling(bot)
         except Exception as e:
             logger.exception(f"❌ Polling crashed: {e}")
             logger.info("🔄 Restarting polling in 5 seconds...")
